@@ -286,9 +286,17 @@ def parametric_model_var_95(sofr_rates_change, returns_mean, returns_cov, stock_
     parametric_var_95_stock = -(parametric_stock_mean - z_score_95 * parametric_stock_std)
     print("parametric_var_95 swap: ", parametric_var_95_swap)
     print("parametric_var_95_stock: ", parametric_var_95_stock)
-    return parametric_var_95_swap, parametric_var_95_stock
 
-parametric_var_95_swap, parametric_var_95_stock = parametric_model_var_95(sofr_rates_change, returns_mean, returns_cov, stock_values_today, sofr_mean, sofr_cov, pv01)
+    parametric_portfolio_mean = parametric_swap_mean + parametric_stock_mean
+    parametric_portfolio_std = np.sqrt(parametric_swap_std ** 2 + parametric_stock_std ** 2)
+
+    parametric_var_95_portfolio = -(parametric_portfolio_mean - z_score_95 * parametric_portfolio_std)
+
+    print("Parametric VaR 95: ", parametric_var_95_portfolio)
+
+    return parametric_var_95_swap, parametric_var_95_stock, parametric_var_95_portfolio
+
+parametric_var_95_swap, parametric_var_95_stock, parametric_var_95_portfolio = parametric_model_var_95(sofr_rates_change, returns_mean, returns_cov, stock_values_today, sofr_mean, sofr_cov, pv01)
 
 #############
 # MONTE-CARLO
@@ -434,8 +442,7 @@ print("Historical Var 95 (Risk-Based): ", historical_risk_based_payer_var_95)
 
 
 print("*** ANDRE ANSWERS ***")
-print("Parametric VaR 95 swap: ", parametric_var_95_swap)
-print("Parametric_var_95_stock: ", parametric_var_95_stock)
+print("Parametric VaR 95: ", parametric_var_95_portfolio)
 print("Monte Carlo VaR 95 (Full Revaluation): ", monte_carlo_full_reval_payer_var_95)
 print("Monte Carlo VaR 95 (Risk-Based): ", monte_carlo_risk_based_payer_var_95)
 print("Historical VaR 95 (Full Revaluation): ", historical_full_reval_payer_95_var)
