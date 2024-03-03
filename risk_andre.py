@@ -411,27 +411,29 @@ monte_carlo_full_reval_payer_var_95, monte_carlo_risk_based_payer_var_95 = monte
 #############
 # HISTORICAL
 #############
+
 def historical_model_var_95(discount_rates, sofr_rates_change, swap_value_today):
-    # we already have previously computed historical discount rates at discount_rates variable
-    sofr_historical_discount_factor = discount_rates.to_numpy()
-    print("check123: ", sofr_historical_discount_factor)
-    historical_full_reval_payer = []
+    """
+    Calculate historical Value at Risk (VaR) using both a full revaluation and a risk-based approach.
 
-    # compute payer swap value for each historical data
-    for historical_discount_factor in sofr_historical_discount_factor:
-        historical_full_reval_payer_data = PV_payer_swap(historical_discount_factor, FIXED_LEG_IR, SWAP_NOTIONAL)
-        historical_full_reval_payer.append( historical_full_reval_payer_data )
+    Parameters:
+    - discount_rates: A DataFrame or NumPy array of historical discount rates.
+    - sofr_rates_change: A DataFrame or NumPy array of historical SOFR rates changes.
+    - swap_value_today: The current value of the swap.
 
-    # calculate change in value of swap
-    historical_full_reval_payer = historical_full_reval_payer - swap_value_today
+    Returns:
+    - A tuple containing the VaR values for the full revaluation and risk-based approaches.
+    """
+    # Ensure input is NumPy array for vectorized operations
+    sofr_historical_discount_factor = np.array(discount_rates)
+    # Vectorized calculation of swap values based on historical discount factors
+    historical_full_reval_payer_data = [PV_payer_swap(factor, FIXED_LEG_IR, SWAP_NOTIONAL) for factor in sofr_historical_discount_factor]
+    historical_full_reval_payer = np.array(historical_full_reval_payer_data) - swap_value_today
     historical_full_reval_payer_95_var = calculate_var(historical_full_reval_payer, CONFIDENCE_LEVEL)
 
-    # we combine interest rate sensitivity (PV01) with historical interest rate movements 
-    # to estimate how the swap's value could change in response to rate fluctuations
-    historical_swap_value_interest_rate_sensitivity = (pv01 * sofr_rates_change.to_numpy())
-    historical_risk_based_payer = historical_swap_value_interest_rate_sensitivity.sum(axis = 1)
-
-    historical_risk_based_payer_var_95 = calculate_var(historical_risk_based_payer, CONFIDENCE_LEVEL)
+    # Risk-based approach using PV01 and historical rate changes
+    historical_swap_value_interest_rate_sensitivity = (pv01 * sofr_rates_change.to_numpy()).sum(axis=1)
+    historical_risk_based_payer_var_95 = calculate_var(historical_swap_value_interest_rate_sensitivity, CONFIDENCE_LEVEL)
 
     return historical_full_reval_payer_95_var, historical_risk_based_payer_var_95
 
