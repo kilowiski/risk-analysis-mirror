@@ -1,5 +1,5 @@
 import pandas as pd
-from scipy.stats import norm
+from scipy.stats import qmc, norm
 import numpy as np
 
 # Load the historical data for SOFR curve and the share prices of AAPL, MSFT, F, BAC
@@ -51,7 +51,7 @@ print(discount_rates)
 swap_notional = 100000000 # 100 million
 fixed_leg_ir = 0.042 # 4.2%
 
-def PV_payer_swap0(discount_rate_today, fixed_leg_ir, swap_notional, start_date):
+def PV_payer_swap0(discount_rate_today, fixed_leg_ir, swap_notional):
     float_leg =  (1 - discount_rate_today[-1])
     fix_leg = fixed_leg_ir * sum(discount_rate_today)
     payer_swap_PV  = swap_notional * (float_leg - fix_leg)
@@ -106,7 +106,7 @@ print("discount_rates000:" ,discount_rates)
 print("discount_rate_today111: ", discount_rate_today)
 # payer_swap_today = PV_payer_swap(sofr_rates, discount_rates, fixed_leg_ir, swap_notional, start_date)
 
-swap_value_today = PV_payer_swap0(discount_rate_today, fixed_leg_ir, swap_notional, today_date)
+swap_value_today = PV_payer_swap0(discount_rate_today, fixed_leg_ir, swap_notional)
 print("swap_value_today: ", swap_value_today)
 
 
@@ -193,7 +193,7 @@ for tenor in range(len(sofr_rates.columns)):
         discount_factor_adj_sofr_rates.append( discount_factor_adj_sofr_tenor )
     # print("discount_factor_adj_sofr_rates111: ", discount_factor_adj_sofr_rates)
     # compute how the value of the payer swap changes in response to the 1 bp rate increase for each tenor.
-    swap_value_change_tenor = PV_payer_swap0(discount_factor_adj_sofr_rates, fixed_leg_ir, swap_notional, today_date) - swap_value_today
+    swap_value_change_tenor = PV_payer_swap0(discount_factor_adj_sofr_rates, fixed_leg_ir, swap_notional) - swap_value_today
     swap_value_change.append( swap_value_change_tenor )
 
 # convert bp to rate %
@@ -228,25 +228,139 @@ print("parametric_var_95 swap: ", parametric_var_95_swap)
 print("parametric_var_95_stock: ", parametric_var_95_stock)
 
 
+def simulate_sobol_returns(dimension, power, mean, std):
+    """
+    Generate Sobol sequences and transform to normal distribution.
+    
+    Parameters:
+    - dimension: Number of dimensions for the Sobol sequence.
+    - power: Determines the length of the sequence, 2^m.
+    - mean: Mean values for the normal distribution.
+    - std: Standard deviation values for the normal distribution.
+    
+    Returns:
+    - Simulated returns following the specified normal distribution.
+    """
+    sampler = qmc.Sobol(d=dimension, scramble=False)
+    samples = sampler.random_base2(m=power)
+    samples = np.delete(samples, 0, axis=0)  # Remove the first all-zero sample
+    
+    # Transform uniform to normal
+    normal_samples = norm.ppf(samples, loc=mean, scale=std)
+    
+    return normal_samples
 
-# Number of simulations
-n_simulations = 10000
+def apply_cholesky(simulated_returns, correlation_matrix):
+    """
+    Apply Cholesky decomposition to simulate correlated returns.
+    
+    Parameters:
+    - simulated_returns: Array of simulated returns to correlate.
+    - correlation_matrix: Correlation matrix of the returns.
+    
+    Returns:
+    - Correlated simulated returns.
+    """
+    cholesky_matrix = np.linalg.cholesky(correlation_matrix)
+    correlated_returns = np.dot(simulated_returns, cholesky_matrix.T)
+    
+    return correlated_returns
 
-# Simulate daily returns for the stocks portion of portfolio using Monte Carlo simulation
-# Assuming normally distributed returns based on historical mean and std deviation
-print("returns_mean: ", returns_mean, "returns_cov: ", returns_cov)
-simulated_stock_returns = np.random.multivariate_normal(returns_mean, returns_cov, n_simulations)
-print("simulated_stock_returns: ", simulated_stock_returns)
-# Assuming the swap's value changes are represented by `swap_value_change`, include them in the simulations
-# For simplicity, let's assume a constant or randomly varied swap change. In practice, you'd model this based on interest rate changes.
-swap_value_change_simulated = np.random.normal(parametric_swap_mean, parametric_swap_std, n_simulations)
-print("swap_value_change_simulated: ", swap_value_change_simulated)
-# Calculate the simulated portfolio value changes, assuming equal weights for simplicity
-portfolio_change_simulated = np.sum(simulated_stock_returns, axis=1) + swap_value_change_simulated
-print("portfolio_change_simulated: ", portfolio_change_simulated)
+stocks_dimension = 4  # For 4 stocks
+sofr_dimension = len(sofr_rates_change.columns)
+power = 20
+# Simulate stock returns
+stock_simulation = simulate_sobol_returns(stocks_dimension, power, returns_mean, returns_std)
+# print("returns_array: ", returns_array)
+stock_corr_matrix = np.corrcoef(returns_array, rowvar=False)
+stock_simulation = apply_cholesky(stock_simulation, stock_corr_matrix)
 
-VaR_95_mc_full = -np.percentile(portfolio_change_simulated, 5)
-print("1-day 95% Monte Carlo VaR (Full Revaluation):", VaR_95_mc_full)
+print("stock_simulation: ", stock_simulation)
+
+# Simulate SOFR changes
+sofr_simulation = simulate_sobol_returns(sofr_dimension, power, sofr_mean, sofr_std)
+sofr_corr_matrix = sofr_rates_change.corr(numeric_only=False).to_numpy()
+sofr_simulation = apply_cholesky(sofr_simulation, sofr_corr_matrix)
+
+print("sofr_simulation: ", sofr_simulation)
+
+confidence_level = 95
+
+# generate new SOFR rates under different simulation scenarios
+print("sofr_simulation")
+print(sofr_simulation)
+print(sofr_simulation.shape)
+print("sofr_today: ", sofr_today)
+sofr_simulation_applied_today = pd.DataFrame(sofr_today + sofr_simulation)
+
+sofr_simulation_applied_today_discount_factor = pd.DataFrame()
+
+# Iterate over the columns in the DataFrame
+for i, column in enumerate(sofr_simulation_applied_today.columns, start=1):
+    # Calculate the discount factor for the current time period
+    discount_factors = np.exp(-sofr_simulation_applied_today[column].astype(float) * i)
+    
+    # Add the calculated discount factors as a new column to the discount factors DataFrame
+    sofr_simulation_applied_today_discount_factor[column] = discount_factors
+
+sofr_simulation_applied_today_discount_factor = np.array( sofr_simulation_applied_today_discount_factor )
+print("sofr_simulation_applied_today_discount_factor: ", sofr_simulation_applied_today_discount_factor.shape)
+
+monte_carlo_full_reval_payer = []
+# compute payer swap value for each simulation
+for simulation_discount_factor in sofr_simulation_applied_today_discount_factor:
+    monte_carlo_full_reval_payer_simulation = PV_payer_swap0(simulation_discount_factor, fixed_leg_ir, swap_notional)
+    monte_carlo_full_reval_payer.append( monte_carlo_full_reval_payer_simulation )
+
+monte_carlo_full_reval_payer = np.array(monte_carlo_full_reval_payer)
+
+def calculate_var(swap_value_changes, confidence_level):
+    """
+    Calculate the Value at Risk (VaR) at a specified confidence level.
+    
+    Parameters:
+    - swap_value_changes: Array of swap value changes from simulations.
+    - confidence_level: Confidence level for VaR calculation.
+    
+    Returns:
+    - The calculated VaR value.
+    """
+    VaR = np.percentile(swap_value_changes, 100 - confidence_level)
+    return VaR
+
+# calculate change in swap value
+monte_carlo_full_reval_payer = monte_carlo_full_reval_payer - swap_value_today
+
+monte_carlo_full_reval_payer_VaR = calculate_var(monte_carlo_full_reval_payer, confidence_level)
+
+print("1-day 95% Monte Carlo VaR (Full Revaluation): ", monte_carlo_full_reval_payer_VaR)
+
+# compute payer swap value for each risk factor using PV01
+monte_carlo_risk_based_payer = (pv01 * sofr_simulation).sum(axis = 1)
+
+# 95% confidence level for VaR
+monte_carlo_risk_based_payer_VaR = calculate_var(monte_carlo_risk_based_payer, confidence_level)
+
+print("1-day 95% Monte Carlo VaR (Risk-Based): ", monte_carlo_risk_based_payer_VaR)
+
+# # Number of simulations
+# n_simulations = 10000
+
+# # Simulate daily returns for the stocks portion of portfolio using Monte Carlo simulation
+# # Assuming normally distributed returns based on historical mean and std deviation
+# print("returns_mean: ", returns_mean, "returns_cov: ", returns_cov)
+# simulated_stock_returns = np.random.multivariate_normal(returns_mean, returns_cov, n_simulations)
+# print("simulated_stock_returns: ", simulated_stock_returns)
+# # Assuming the swap's value changes are represented by `swap_value_change`, include them in the simulations
+# # For simplicity, let's assume a constant or randomly varied swap change. In practice, you'd model this based on interest rate changes.
+# swap_value_change_simulated = np.random.normal(parametric_swap_mean, parametric_swap_std, n_simulations)
+# print("swap_value_change_simulated: ", swap_value_change_simulated)
+# # Calculate the simulated portfolio value changes, assuming equal weights for simplicity
+# portfolio_change_simulated = np.sum(simulated_stock_returns, axis=1) + swap_value_change_simulated
+# print("portfolio_change_simulated: ", portfolio_change_simulated)
+
+# VaR_95_mc_full = -np.percentile(portfolio_change_simulated, 5)
+# print("1-day 95% Monte Carlo VaR (Full Revaluation):", VaR_95_mc_full)
 
 
 # # Combine stock and swap returns for the historical VaR calculation
