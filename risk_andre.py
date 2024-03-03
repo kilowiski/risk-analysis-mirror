@@ -40,27 +40,43 @@ portfolio = pd.DataFrame({
     'BAC': bac_returns.values
 })
 
-# Convert the tenor labels from strings to integers for calculation
-tenors = [int(col.replace('Y', '')) for col in sofr_rates.columns]
 
-# Calculate discount rates using e^-rT for each tenor and rate
-discount_rates = sofr_rates.copy()
 
-for tenor, rate in zip(tenors, sofr_rates.columns):
-    discount_rates[rate] = np.exp(-sofr_rates[rate] * tenor)
-
-print("discount_rates: ")
-print(discount_rates)
-
-swap_notional = 100000000 # 100 million
-fixed_leg_ir = 0.042 # 4.2%
+SWAP_NOTIONAL = 100000000 # 100 million
+FIXED_LEG_IR = 0.042 # 4.2%
+TODAY_DATE = '2023-10-30'  # Starting date for calculation
+CONFIDENCE_LEVEL = 95
 
 def PV_payer_swap(discount_rate_today, fixed_leg_ir, swap_notional):
-    float_leg =  (1 - discount_rate_today[-1])
+    """
+    Calculate the present value (PV) of a payer interest rate swap.
+
+    The function computes the net present value of the swap by considering the
+    difference between the floating leg (based on the last discount rate) and
+    the fixed leg (based on the fixed interest rate and the sum of today's discount rates).
+
+    Parameters:
+    - discount_rate_today (np.ndarray): An array of discount rates applicable for today,
+                                        typically derived from SOFR rates adjusted for each tenor.
+    - fixed_leg_ir (float): The fixed interest rate agreed upon in the swap contract.
+    - swap_notional (float): The notional amount of the swap.
+
+    Returns:
+    - float: The net present value (PV) of the payer swap, which is the difference between
+             the floating leg and fixed leg values, scaled by the notional amount.
+    """
+    # Calculate the value of the floating leg using the last discount rate
+    float_leg = 1 - discount_rate_today[-1]
+
+    # Calculate the value of the fixed leg as the product of the fixed interest rate
+    # and the sum of today's discount rates
     fix_leg = fixed_leg_ir * sum(discount_rate_today)
-    payer_swap_PV  = swap_notional * (float_leg - fix_leg)
+
+    # Compute the net present value of the swap
+    payer_swap_PV = swap_notional * (float_leg - fix_leg)
 
     return payer_swap_PV
+
 
 def PV_payer_swap0(sofr_rates, discount_rates, fixed_leg_ir, swap_notional, start_date):
     """
@@ -96,21 +112,57 @@ def PV_payer_swap0(sofr_rates, discount_rates, fixed_leg_ir, swap_notional, star
     
     return payer_swap_pv
 
+def calculate_var(swap_value_changes, confidence_level):
+    """
+    Calculate the Value at Risk (VaR) at a specified confidence level.
+    
+    Parameters:
+    - swap_value_changes: Array of swap value changes from simulations.
+    - confidence_level: Confidence level for VaR calculation.
+    
+    Returns:
+    - The calculated VaR value.
+    """
+    VaR = np.percentile(swap_value_changes, 100 - confidence_level)
+    return abs(VaR)
 
+# Convert the tenor labels from strings to integers for calculation
+tenors = [int(col.replace('Y', '')) for col in sofr_rates.columns]
+
+# Calculate discount rates using e^-rT for each tenor and rate
+discount_rates = sofr_rates.copy()
+
+for tenor, rate in zip(tenors, sofr_rates.columns):
+    discount_rates[rate] = np.exp(-sofr_rates[rate] * tenor)
+
+print("discount_rates: ")
+print(discount_rates)
 
 # Convert the index of the sofr_rates DataFrame to datetime
 sofr_rates.index = pd.to_datetime(sofr_rates.index)
 discount_rates.index = pd.to_datetime(discount_rates.index)
-today_date = '2023-10-30'  # Starting date for calculation
-print("111", sofr_rates.loc[today_date, '1Y'])
+
+print("111", sofr_rates.loc[TODAY_DATE, '1Y'])
+
+# track daily change in sofr rates
+sofr_rates_change = sofr_rates.diff().dropna()
+
+# mean change in sofr rates
+sofr_mean = sofr_rates_change.mean(axis = 0).to_numpy()
+
+# std change in sofr rates
+sofr_std = sofr_rates_change.std(axis = 0).to_numpy()
+
+# covariance matrices of sofr rates
+sofr_cov = (sofr_rates_change).cov(numeric_only = False).to_numpy()
 
 # compute current value of swap
-discount_rate_today = discount_rates.loc[today_date].to_numpy()
+discount_rate_today = discount_rates.loc[TODAY_DATE].to_numpy()
 print("discount_rates000:" ,discount_rates)
 print("discount_rate_today111: ", discount_rate_today)
 # payer_swap_today = PV_payer_swap(sofr_rates, discount_rates, fixed_leg_ir, swap_notional, start_date)
 
-swap_value_today = PV_payer_swap(discount_rate_today, fixed_leg_ir, swap_notional)
+swap_value_today = PV_payer_swap(discount_rate_today, FIXED_LEG_IR, SWAP_NOTIONAL)
 print("swap_value_today: ", swap_value_today)
 
 
@@ -118,7 +170,7 @@ print("swap_value_today: ", swap_value_today)
 stock_prices = portfolio.drop(columns=['SOFR'])
 stock_prices.index = pd.to_datetime(stock_prices.index)
 print("stock_prices:" , stock_prices)
-stock_prices_today = stock_prices.loc[today_date]
+stock_prices_today = stock_prices.loc[TODAY_DATE]
 print("stock_prices_today: ", stock_prices_today)
 
 # number of shares held today per stock with 1M USD
@@ -162,25 +214,15 @@ print("returns_mean: ", returns_mean)
 print("returns_std: ", returns_std)
 print("returns_cov: ", returns_cov)
 
-#############
-# PARAMETRIC
-#############
-
-# parametric stock statistics
-parametric_stock_mean = (returns_mean * stock_values_today).sum()
-parametric_stock_std = np.sqrt(np.matmul(np.matmul(stock_values_today, returns_cov), stock_values_today.T))
-print("parametric stock mean: ", parametric_stock_mean)
-print("parametric_stock_std: ", parametric_stock_std )
-
 basis_point_change = 0.0001
 
 swap_value_change = []
 
-sofr_rates_change = sofr_rates.diff().dropna()
-
-# filter for rates on that day
-sofr_today = sofr_rates.loc[today_date].to_numpy()
+# filter for sofr rates on today
+sofr_today = sofr_rates.loc[TODAY_DATE].to_numpy()
 print("sofr_today: ", sofr_today)
+
+
 
 for tenor in range(len(sofr_rates.columns)):
     pv01_sofr_values = []
@@ -201,7 +243,7 @@ for tenor in range(len(sofr_rates.columns)):
         discount_factor_adj_sofr_rates.append( discount_factor_adj_sofr_tenor )
     # print("discount_factor_adj_sofr_rates111: ", discount_factor_adj_sofr_rates)
     # compute how the value of the payer swap changes in response to the 1 bp rate increase for each tenor.
-    swap_value_change_tenor = PV_payer_swap(discount_factor_adj_sofr_rates, fixed_leg_ir, swap_notional) - swap_value_today
+    swap_value_change_tenor = PV_payer_swap(discount_factor_adj_sofr_rates, FIXED_LEG_IR, SWAP_NOTIONAL) - swap_value_today
     swap_value_change.append( swap_value_change_tenor )
 
 # convert bp to rate %
@@ -210,30 +252,61 @@ print("basis_point_change: ", basis_point_change)
 swap_value_change = np.array(swap_value_change)
 pv01 = swap_value_change / basis_point_change
 print("pv01: ", pv01)
-# mean change in rates
-sofr_mean = sofr_rates_change.mean(axis = 0).to_numpy()
 
-# std change in rates 
-sofr_std = sofr_rates_change.std(axis = 0).to_numpy()
+#############
+# PARAMETRIC
+#############
 
-# covariance matrixs of rates
-sofr_cov = (sofr_rates_change).cov(numeric_only = False).to_numpy()
+def compute_parametric_portfolio_statistics(asset_means, covariance_matrix, asset_values):
+    """
+    Calculate parametric statistics of a portfolio, including the mean and standard deviation, based on asset means, the covariance matrix, and the portfolio weights.
+    This method assumes a normal distribution of returns and uses these parameters to model portfolio behavior and risk.
 
-# Parametric swap statistics
-parametric_swap_mean = (pv01 * sofr_mean).sum()
-parametric_swap_std = np.sqrt(np.matmul(np.matmul(pv01, sofr_cov), pv01.T))
-print("parametric_swap_mean: ", parametric_swap_mean)
-print("parametric_swap_std: ", parametric_swap_std)
+    Parameters:
+    - asset_means (np.array): An array of mean returns for each asset in the portfolio, representing expected performance.
+    - covariance_matrix (np.array): A 2D array representing the covariance between the portfolio assets, indicating how asset returns move relative to each other.
+    - asset_values (np.array): An array representing the weights or notional values of each asset in the portfolio, used to calculate weighted returns and risk.
 
-# Calculate 1-day 95% VaR for the portfolio
-# Z-Score for 95% confidence interval
-z_score_95 = norm.ppf(0.95)
+    Returns:
+    - parametric_mean (float): The weighted average mean return of the portfolio, indicating expected portfolio performance.
+    - parametric_std (float): The standard deviation of the portfolio's return, representing the portfolio's total risk in a parametric model.
+    """
+    # Step 1: Calculate the weighted mean return of the portfolio
+    parametric_mean = np.dot(asset_means, asset_values)
 
-# Parametric VaR
-parametric_var_95_swap = -(parametric_swap_mean - z_score_95 * parametric_swap_std)
-parametric_var_95_stock = -(parametric_stock_mean - z_score_95 * parametric_stock_std)
-print("parametric_var_95 swap: ", parametric_var_95_swap)
-print("parametric_var_95_stock: ", parametric_var_95_stock)
+    # Step 2: Calculate the portfolio variance using the covariance matrix and asset values
+    weighted_covariances = np.dot(covariance_matrix, asset_values)
+    parametric_variance = np.dot(asset_values, weighted_covariances)
+
+    # Step 3: Calculate the portfolio standard deviation from the variance
+    parametric_std = np.sqrt(parametric_variance)
+
+    return parametric_mean, parametric_std
+
+def parametric_model_var_95(sofr_rates_change, returns_mean, returns_cov, sofr_mean, sofr_cov, stock_values_today):
+
+    parametric_stock_mean, parametric_stock_std = compute_parametric_portfolio_statistics(returns_mean, returns_cov, stock_values_today)
+
+    print("parametric stock mean: ", parametric_stock_mean)
+    print("parametric_stock_std: ", parametric_stock_std )
+
+    parametric_swap_mean, parametric_swap_std = compute_parametric_portfolio_statistics(sofr_mean, sofr_cov, pv01)
+
+    print("parametric_swap_mean: ", parametric_swap_mean)
+    print("parametric_swap_std: ", parametric_swap_std)
+
+    # Calculate 1-day 95% VaR for the portfolio
+    # Z-Score for 95% confidence interval
+    z_score_95 = norm.ppf(0.95)
+
+    # Parametric VaR
+    parametric_var_95_swap = -(parametric_swap_mean - z_score_95 * parametric_swap_std)
+    parametric_var_95_stock = -(parametric_stock_mean - z_score_95 * parametric_stock_std)
+    print("parametric_var_95 swap: ", parametric_var_95_swap)
+    print("parametric_var_95_stock: ", parametric_var_95_stock)
+    return parametric_var_95_swap, parametric_var_95_stock
+
+parametric_var_95_swap, parametric_var_95_stock = parametric_model_var_95(sofr_rates_change, returns_mean, returns_cov, sofr_mean, sofr_cov, stock_values_today)
 
 #############
 # MONTE-CARLO
@@ -277,119 +350,114 @@ def apply_cholesky(simulated_returns, correlation_matrix):
     
     return correlated_returns
 
-stocks_dimension = 4  # For 4 stocks
-sofr_dimension = len(sofr_rates_change.columns)
-power = 20
-# Simulate stock returns
-stock_simulation = simulate_sobol_returns(stocks_dimension, power, returns_mean, returns_std)
-# print("returns_array: ", returns_array)
-stock_corr_matrix = np.corrcoef(returns_array, rowvar=False)
-stock_simulation = apply_cholesky(stock_simulation, stock_corr_matrix)
+def monte_carlo_model_var_95(sofr_rates_change, returns_mean, returns_cov, stock_values_today):
+    stocks_dimension = 4  # For 4 stocks
+    sofr_dimension = len(sofr_rates_change.columns)
+    power = 20
+    # Simulate stock returns
+    stock_simulation = simulate_sobol_returns(stocks_dimension, power, returns_mean, returns_std)
+    # print("returns_array: ", returns_array)
+    stock_corr_matrix = np.corrcoef(returns_array, rowvar=False)
+    stock_simulation = apply_cholesky(stock_simulation, stock_corr_matrix)
 
-print("stock_simulation: ", stock_simulation)
+    print("stock_simulation: ", stock_simulation)
 
-# Simulate SOFR changes
-sofr_simulation = simulate_sobol_returns(sofr_dimension, power, sofr_mean, sofr_std)
-sofr_corr_matrix = sofr_rates_change.corr(numeric_only=False).to_numpy()
-sofr_simulation = apply_cholesky(sofr_simulation, sofr_corr_matrix)
+    # Simulate SOFR changes
+    sofr_simulation = simulate_sobol_returns(sofr_dimension, power, sofr_mean, sofr_std)
+    sofr_corr_matrix = sofr_rates_change.corr(numeric_only=False).to_numpy()
+    sofr_simulation = apply_cholesky(sofr_simulation, sofr_corr_matrix)
 
-print("sofr_simulation: ", sofr_simulation)
+    print("sofr_simulation: ", sofr_simulation)
 
-confidence_level = 95
-
-# generate new SOFR rates under different simulation scenarios
-print("sofr_simulation")
-print(sofr_simulation)
-print(sofr_simulation.shape)
-print("sofr_today: ", sofr_today)
-sofr_simulation_applied_today = pd.DataFrame(sofr_today + sofr_simulation)
-
-sofr_simulation_applied_today_discount_factor = pd.DataFrame()
-
-# Iterate over the columns in the DataFrame
-for i, column in enumerate(sofr_simulation_applied_today.columns, start=1):
-    # Calculate the discount factor for the current time period
-    discount_factors = np.exp(-sofr_simulation_applied_today[column].astype(float) * i)
     
-    # Add the calculated discount factors as a new column to the discount factors DataFrame
-    sofr_simulation_applied_today_discount_factor[column] = discount_factors
 
-sofr_simulation_applied_today_discount_factor = np.array( sofr_simulation_applied_today_discount_factor )
-print("sofr_simulation_applied_today_discount_factor: ", sofr_simulation_applied_today_discount_factor.shape)
+    # generate new SOFR rates under different simulation scenarios
+    print("sofr_simulation")
+    print(sofr_simulation)
+    print(sofr_simulation.shape)
+    print("sofr_today: ", sofr_today)
+    sofr_simulation_applied_today = pd.DataFrame(sofr_today + sofr_simulation)
 
-monte_carlo_full_reval_payer = []
-# compute payer swap value for each simulation
-for simulation_discount_factor in sofr_simulation_applied_today_discount_factor:
-    monte_carlo_full_reval_payer_simulation = PV_payer_swap(simulation_discount_factor, fixed_leg_ir, swap_notional)
-    monte_carlo_full_reval_payer.append( monte_carlo_full_reval_payer_simulation )
+    sofr_simulation_applied_today_discount_factor = pd.DataFrame()
 
-monte_carlo_full_reval_payer = np.array(monte_carlo_full_reval_payer)
+    # Iterate over the columns in the DataFrame
+    for i, column in enumerate(sofr_simulation_applied_today.columns, start=1):
+        # Calculate the discount factor for the current time period
+        discount_factors = np.exp(-sofr_simulation_applied_today[column].astype(float) * i)
+        
+        # Add the calculated discount factors as a new column to the discount factors DataFrame
+        sofr_simulation_applied_today_discount_factor[column] = discount_factors
 
-def calculate_var(swap_value_changes, confidence_level):
-    """
-    Calculate the Value at Risk (VaR) at a specified confidence level.
-    
-    Parameters:
-    - swap_value_changes: Array of swap value changes from simulations.
-    - confidence_level: Confidence level for VaR calculation.
-    
-    Returns:
-    - The calculated VaR value.
-    """
-    VaR = np.percentile(swap_value_changes, 100 - confidence_level)
-    return abs(VaR)
+    sofr_simulation_applied_today_discount_factor = np.array( sofr_simulation_applied_today_discount_factor )
+    print("sofr_simulation_applied_today_discount_factor: ", sofr_simulation_applied_today_discount_factor.shape)
 
-# calculate change in swap value
-monte_carlo_full_reval_payer = monte_carlo_full_reval_payer - swap_value_today
+    monte_carlo_full_reval_payer = []
+    # compute payer swap value for each simulation
+    for simulation_discount_factor in sofr_simulation_applied_today_discount_factor:
+        monte_carlo_full_reval_payer_simulation = PV_payer_swap(simulation_discount_factor, FIXED_LEG_IR, SWAP_NOTIONAL)
+        monte_carlo_full_reval_payer.append( monte_carlo_full_reval_payer_simulation )
 
-monte_carlo_full_reval_payer_var_95 = calculate_var(monte_carlo_full_reval_payer, confidence_level)
+    monte_carlo_full_reval_payer = np.array(monte_carlo_full_reval_payer)
 
-print("Monte Carlo VaR 95 (Full Revaluation): ", monte_carlo_full_reval_payer_var_95)
+    # calculate change in swap value
+    monte_carlo_full_reval_payer = monte_carlo_full_reval_payer - swap_value_today
 
-# compute payer swap value for each risk factor using PV01
-monte_carlo_risk_based_payer = (pv01 * sofr_simulation).sum(axis = 1)
+    monte_carlo_full_reval_payer_var_95 = calculate_var(monte_carlo_full_reval_payer, CONFIDENCE_LEVEL)
 
-# 95% confidence level for VaR
-monte_carlo_risk_based_payer_var_95 = calculate_var(monte_carlo_risk_based_payer, confidence_level)
+    print("Monte Carlo VaR 95 (Full Revaluation): ", monte_carlo_full_reval_payer_var_95)
 
-print("Monte Carlo VaR 95 (Risk-Based): ", monte_carlo_risk_based_payer_var_95)
+    # compute payer swap value for each risk factor using PV01
+    monte_carlo_risk_based_payer = (pv01 * sofr_simulation).sum(axis = 1)
+
+    # 95% confidence level for VaR
+    monte_carlo_risk_based_payer_var_95 = calculate_var(monte_carlo_risk_based_payer, CONFIDENCE_LEVEL)
+
+    print("Monte Carlo VaR 95 (Risk-Based): ", monte_carlo_risk_based_payer_var_95)
+
+    return monte_carlo_full_reval_payer_var_95, monte_carlo_risk_based_payer_var_95
+
+monte_carlo_full_reval_payer_var_95, monte_carlo_risk_based_payer_var_95 = monte_carlo_model_var_95(sofr_rates_change, returns_mean, returns_cov, stock_values_today)
 
 #############
 # HISTORICAL
 #############
+def historical_model_var_95(sofr_rates_change, discount_rates):
+    # we already have previously computed historical discount rates at discount_rates variable
+    sofr_historical_discount_factor = discount_rates.to_numpy()
+    print("check123: ", sofr_historical_discount_factor)
+    historical_full_reval_payer = []
 
-# we already have previously computed historical discount rates at discount_rates variable
-sofr_historical_discount_factor = discount_rates.to_numpy()
-print("check123: ", sofr_historical_discount_factor)
-historical_full_reval_payer = []
+    # compute payer swap value for each historical data
+    for historical_discount_factor in sofr_historical_discount_factor:
+        historical_full_reval_payer_data = PV_payer_swap(historical_discount_factor, FIXED_LEG_IR, SWAP_NOTIONAL)
+        historical_full_reval_payer.append( historical_full_reval_payer_data )
 
-# compute payer swap value for each historical data
-for historical_discount_factor in sofr_historical_discount_factor:
-    historical_full_reval_payer_data = PV_payer_swap(historical_discount_factor, fixed_leg_ir, swap_notional)
-    historical_full_reval_payer.append( historical_full_reval_payer_data )
+    # calculate change in value of swap
+    historical_full_reval_payer = historical_full_reval_payer - swap_value_today
+    historical_full_reval_payer_95_var = calculate_var(historical_full_reval_payer, CONFIDENCE_LEVEL)
 
-# calculate change in value of swap
-historical_full_reval_payer = historical_full_reval_payer - swap_value_today
-historical_full_reval_payer_95_var = calculate_var(historical_full_reval_payer, confidence_level)
+    # we combine interest rate sensitivity (PV01) with historical interest rate movements 
+    # to estimate how the swap's value could change in response to rate fluctuations
+    historical_swap_value_interest_rate_sensitivity = (pv01 * sofr_rates_change.to_numpy())
+    historical_risk_based_payer = historical_swap_value_interest_rate_sensitivity.sum(axis = 1)
 
-# we combine interest rate sensitivity (PV01) with historical interest rate movements 
-# to estimate how the swap's value could change in response to rate fluctuations
-historical_swap_value_interest_rate_sensitivity = (pv01 * sofr_rates_change.to_numpy())
-historical_risk_based_payer = historical_swap_value_interest_rate_sensitivity.sum(axis = 1)
+    historical_risk_based_payer_var_95 = calculate_var(historical_risk_based_payer, CONFIDENCE_LEVEL)
 
-historical_risk_based_payer_var_95 = calculate_var(historical_risk_based_payer, confidence_level)
+    return historical_full_reval_payer_95_var, historical_risk_based_payer_var_95
+
+historical_full_reval_payer_95_var, historical_risk_based_payer_var_95 = historical_model_var_95(sofr_rates_change, discount_rates)
 
 print("Historical Var 95 (Full Revaluation): ", historical_full_reval_payer_95_var)
 print("Historical Var 95 (Risk-Based): ", historical_risk_based_payer_var_95)
 
 
 print("*** ANDRE ANSWERS ***")
-print("parametric_var_95 swap: ", parametric_var_95_swap)
-print("parametric_var_95_stock: ", parametric_var_95_stock)
+print("Parametric VaR 95 swap: ", parametric_var_95_swap)
+print("Parametric_var_95_stock: ", parametric_var_95_stock)
 print("Monte Carlo VaR 95 (Full Revaluation): ", monte_carlo_full_reval_payer_var_95)
 print("Monte Carlo VaR 95 (Risk-Based): ", monte_carlo_risk_based_payer_var_95)
-print("Historical Var 95 (Full Revaluation): ", historical_full_reval_payer_95_var)
-print("Historical Var 95 (Risk-Based): ", historical_risk_based_payer_var_95)
+print("Historical VaR 95 (Full Revaluation): ", historical_full_reval_payer_95_var)
+print("Historical VaR 95 (Risk-Based): ", historical_risk_based_payer_var_95)
 
 
 
