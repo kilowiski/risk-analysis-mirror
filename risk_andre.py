@@ -115,9 +115,6 @@ def data_prep():
     sofr_rates = sofr_data[sofr_data['Tenor'].isin(tenors)].iloc[:, 2:].T
     sofr_rates.columns = tenors
 
-    print("sofr_rates: ")
-    print( sofr_rates )
-
     # compute daily returns for the stocks
     aapl_returns = aapl_data['Adj Close']
     msft_returns = msft_data['Adj Close']
@@ -133,8 +130,6 @@ def data_prep():
         'BAC': bac_returns.values
     })
 
-
-
     # Convert the tenor labels from strings to integers for calculation
     tenors = [int(col.replace('Y', '')) for col in sofr_rates.columns]
 
@@ -144,48 +139,32 @@ def data_prep():
     for tenor, rate in zip(tenors, sofr_rates.columns):
         discount_rates[rate] = np.exp(-sofr_rates[rate] * tenor)
 
-    print("discount_rates: ")
-    print(discount_rates)
-
     # Convert the index of the sofr_rates DataFrame to datetime
     sofr_rates.index = pd.to_datetime(sofr_rates.index)
     discount_rates.index = pd.to_datetime(discount_rates.index)
 
-    print("111", sofr_rates.loc[TODAY_DATE, '1Y'])
-
     # track daily change in sofr rates
     sofr_rates_change = sofr_rates.diff().dropna()
 
-    # mean change in sofr rates
+    # compute mean, std, cov matrix in sofr rates
     sofr_mean = sofr_rates_change.mean(axis = 0).to_numpy()
-
-    # std change in sofr rates
-    sofr_std = sofr_rates_change.std(axis = 0).to_numpy()
-
-    # covariance matrices of sofr rates
-    sofr_cov = (sofr_rates_change).cov(numeric_only = False).to_numpy()
+    sofr_std  = sofr_rates_change.std(axis = 0).to_numpy()
+    sofr_cov  = (sofr_rates_change).cov().to_numpy()
 
     # compute current value of swap
     discount_rate_today = discount_rates.loc[TODAY_DATE].to_numpy()
-    print("discount_rates000:" ,discount_rates)
-    print("discount_rate_today111: ", discount_rate_today)
-    # payer_swap_today = PV_payer_swap(sofr_rates, discount_rates, fixed_leg_ir, swap_notional, start_date)
 
-    swap_value_today = PV_payer_swap(discount_rate_today, FIXED_LEG_IR, SWAP_NOTIONAL)
-    print("swap_value_today: ", swap_value_today)
+    # swap_value_today = PV_payer_swap(sofr_rates, discount_rates, fixed_leg_ir, swap_notional, start_date)
+    swap_value_today   = PV_payer_swap(discount_rate_today, FIXED_LEG_IR, SWAP_NOTIONAL)
 
-
-
-    stock_prices = portfolio.drop(columns=['SOFR'])
+    stock_prices       = portfolio.drop(columns=['SOFR'])
     stock_prices.index = pd.to_datetime(stock_prices.index)
-    print("stock_prices:" , stock_prices)
     stock_prices_today = stock_prices.loc[TODAY_DATE]
-    print("stock_prices_today: ", stock_prices_today)
+
 
     # number of shares held today per stock with 1M USD
-    stock_values_today = np.array([1000000] * 4)
+    stock_values_today    = np.array([1000000] * 4)
     num_shares_held_today = stock_values_today / stock_prices_today
-    print("num_shares_held_today: ", num_shares_held_today)
     portfolio_value_today = swap_value_today + sum(stock_values_today)
 
     print(f'Stock Value Today (30 Oct 2023): ${round(sum(stock_values_today), 2):,}')
@@ -194,7 +173,6 @@ def data_prep():
 
 
     stock_prices_array = stock_prices.to_numpy()
-    print("stock_prices_array: ", stock_prices_array)
 
     # compute daily returns
     for stock_price in stock_prices.columns:
@@ -217,11 +195,8 @@ def data_prep():
     # print("returns_array: ", returns_array)
 
     returns_mean = returns_array.mean(axis = 0)
-    returns_std = returns_array.std(axis = 0)
-    returns_cov = np.cov(returns_array, rowvar=False)
-    print("returns_mean: ", returns_mean)
-    print("returns_std: ", returns_std)
-    print("returns_cov: ", returns_cov)
+    returns_std  = returns_array.std(axis = 0)
+    returns_cov  = np.cov(returns_array, rowvar=False)
 
     basis_point_change = 0.0001
 
@@ -229,7 +204,6 @@ def data_prep():
 
     # filter for sofr rates on today
     sofr_today = sofr_rates.loc[TODAY_DATE].to_numpy()
-    print("sofr_today: ", sofr_today)
 
     for tenor in range(len(sofr_rates.columns)):
         pv01_sofr_values = []
@@ -253,12 +227,9 @@ def data_prep():
         swap_value_change_tenor = PV_payer_swap(discount_factor_adj_sofr_rates, FIXED_LEG_IR, SWAP_NOTIONAL) - swap_value_today
         swap_value_change.append( swap_value_change_tenor )
 
-    # convert bp to rate %
-    print("swap_value_change: ", swap_value_change)
-    print("basis_point_change: ", basis_point_change)
+    # compute pv01 from bp change
     swap_value_change = np.array(swap_value_change)
     pv01 = swap_value_change / basis_point_change
-    print("pv01: ", pv01)
 
     return discount_rates, sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, sofr_today, swap_value_today, pv01
 
