@@ -27,8 +27,6 @@ combined_stock_df.columns = ['AAPL','MSFT','F','BAC']
 
 
 # Parametric VaR
-# SOFR
-
 
 def pv_payer_swap(rate_curve_df, notional, fixed_rate, tenor):
     
@@ -63,6 +61,8 @@ def calc_pv01(rate_curve_df, notional, fixed_rate, tenor):
 risk_sensitivity = np.append(calc_pv01(sofr_df.iloc[-1, :], 100000000, 0.042, 10),
                                 np.array([1000000, 1000000, 1000000, 1000000]))
 
+sofr_mean = sofr_df.mean()
+stock_mean = combined_stock_df.mean()
 mean_change = np.array(pd.concat([sofr_diff.mean(), 
                                   combined_stock_df.mean()]))
 
@@ -75,8 +75,9 @@ var_portf_pl = np.matmul(np.matmul(risk_sensitivity.reshape(1, 14), cov_matrix),
 
 mean_portf_pl = (risk_sensitivity * mean_change).sum()
 
-parametric_var = abs(mean_portf_pl + (-1.6448536269514729)*np.sqrt(var_portf_pl))
+parametric_var = abs(mean_portf_pl + (-1.6448536269514729)*np.sqrt(var_portf_pl))[0]
 
+## MONTE CARLO
 
 def rng_changes(risk_factor_changes):
     
@@ -91,9 +92,8 @@ def rng_changes(risk_factor_changes):
                       )
         
     b = np.linalg.cholesky(risk_factor_changes.corr())
-    c = np.matmul(b,a)
     
-    return c
+    return np.matmul(b,a)
 
 
 risk_factor_changes = pd.concat([sofr_diff.reset_index().iloc[:,1:], 
@@ -103,21 +103,52 @@ risk_factor_changes = pd.concat([sofr_diff.reset_index().iloc[:,1:],
 monte_carlo_risk_based_var = np.array([])
 
 for i in range(10000):
-    a = rng_changes(risk_factor_changes)
-    mean_portf_pl = (risk_sensitivity * a).sum()
+    a = rng_changes(sofr_diff.reset_index().iloc[:,1:])
+    b = rng_changes(combined_stock_df.reset_index().iloc[:,1:])
+    
+    mean_portf_pl = (risk_sensitivity[:10] * a).sum() + (risk_sensitivity[10:] * b).sum()
     
     monte_carlo_risk_based_var = np.append(monte_carlo_risk_based_var, mean_portf_pl)
     
 
-monte_carlo_risk_based_var = np.sort(monte_carlo_risk_based_var)[int(monte_carlo_risk_based_var.shape[0]*0.05)]
+monte_carlo_risk_based_var = abs(np.sort(monte_carlo_risk_based_var)[int(monte_carlo_risk_based_var.shape[0]*0.05)])
+
+
 
 monte_carlo_full_rep_var = np.array([])
 
-for i in range(100000):
-    a = rng_changes(risk_factor_changes)
-    mean_portf_pl = (risk_sensitivity * (mean_change+a)).sum()
+for i in range(10000):
+    a = sofr_mean + rng_changes(sofr_diff.reset_index().iloc[:,1:])
+    b = stock_mean + rng_changes(combined_stock_df.reset_index().iloc[:,1:])
+    
+    mean_portf_pl = pv_payer_swap(a, 100000000, 0.042, 10) - pv_payer_swap(sofr_df.iloc[-1, :], 100000000, 0.042, 10)\
+                    + (risk_sensitivity[10:] * b).sum()
     
     monte_carlo_full_rep_var = np.append(monte_carlo_full_rep_var, mean_portf_pl)
     
 monte_carlo_full_rep_var = np.sort(monte_carlo_full_rep_var)[int(monte_carlo_full_rep_var.shape[0]*0.05)]
 
+
+#HISTORICAL
+
+hist_full_rep_var = np.array([])
+
+for i in range(sofr_df.shape[0]-1):
+    a = pv_payer_swap(sofr_df.iloc[i, :], 100000000, 0.042, 10) - pv_payer_swap(sofr_df.iloc[-1, :], 100000000, 0.042, 10)
+    b = 1000000 * sum(combined_stock_df.iloc[i, :])
+    
+    hist_full_rep_var = np.append(hist_full_rep_var, a+b)
+
+hist_full_rep_var = np.sort(hist_full_rep_var)[int(hist_full_rep_var.shape[0]*0.05)]
+
+
+hist_risk_based_var = np.array([])
+
+for i in range(risk_factor_changes.shape[0]-1):
+    a = risk_factor_changes.iloc[i, :] - risk_factor_changes.mean()
+    mean_portf_pl = (risk_sensitivity * a).sum()
+    hist_risk_based_var = np.append(hist_risk_based_var, mean_portf_pl)
+    
+
+hist_risk_based_var = abs(np.sort(hist_risk_based_var)[int(hist_risk_based_var.shape[0]*0.05)])
+    
