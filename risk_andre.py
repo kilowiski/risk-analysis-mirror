@@ -341,24 +341,50 @@ def apply_cholesky(simulated_returns, correlation_matrix):
     
     return correlated_returns
 
+rng = np.random.default_rng()
+
+def simulate_multivariate_returns(mean, cov, size):
+    """
+    Directly generate simulated returns from a multivariate normal distribution.
+    
+    Parameters:
+    - mean: Mean values for the normal distribution, a 1D array.
+    - cov: Covariance matrix for the distribution.
+    - size: The number of samples to generate.
+    
+    Returns:
+    - Simulated returns following the specified multivariate normal distribution.
+    """
+    return rng.multivariate_normal(mean, cov, size, method='cholesky')
+
 def monte_carlo_model_var_95(sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, num_shares_held_today, stock_prices_today, sofr_today, swap_value_today):
+    # # raw sobol sequence + cholesky decomposition method
+    # stocks_dimension = 4  # For 4 stocks
+    # sofr_dimension = len(sofr_rates_change.columns)
+    # power = 12
+    # # Simulate stock returns
+    # stock_simulation = simulate_sobol_returns(stocks_dimension, power, returns_mean, returns_std)
+    # # print("returns_array: ", returns_array)
+    # stock_corr_matrix = np.corrcoef(returns_array, rowvar=False)
+    # stock_simulation = apply_cholesky(stock_simulation, stock_corr_matrix)
+
+    # # Simulate SOFR changes
+    # sofr_simulation = simulate_sobol_returns(sofr_dimension, power, sofr_mean, sofr_std)
+    # sofr_corr_matrix = sofr_rates_change.corr(numeric_only=False).to_numpy()
+    # sofr_simulation = apply_cholesky(sofr_simulation, sofr_corr_matrix)
+
+    # print("sofr_simulation: ", sofr_simulation)
+
     stocks_dimension = 4  # For 4 stocks
     sofr_dimension = len(sofr_rates_change.columns)
-    power = 12
+    num_simulations = 2**12  # Corresponds to power=12 in the original function
     # Simulate stock returns
-    stock_simulation = simulate_sobol_returns(stocks_dimension, power, returns_mean, returns_std)
-    # print("returns_array: ", returns_array)
-    stock_corr_matrix = np.corrcoef(returns_array, rowvar=False)
-    stock_simulation = apply_cholesky(stock_simulation, stock_corr_matrix)
+    stock_simulation = simulate_multivariate_returns(returns_mean, returns_cov, num_simulations)
+    # Simulate SOFR changes
+    sofr_simulation = simulate_multivariate_returns(sofr_mean, sofr_cov, num_simulations)
+
 
     print("stock_simulation: ", stock_simulation)
-
-    # Simulate SOFR changes
-    sofr_simulation = simulate_sobol_returns(sofr_dimension, power, sofr_mean, sofr_std)
-    sofr_corr_matrix = sofr_rates_change.corr(numeric_only=False).to_numpy()
-    sofr_simulation = apply_cholesky(sofr_simulation, sofr_corr_matrix)
-
-    print("sofr_simulation: ", sofr_simulation)
 
     
 
@@ -420,8 +446,6 @@ def monte_carlo_model_var_95(sofr_rates_change, returns_array, returns_mean, ret
     # subtract new stock portfolio value from current value 
     monte_carlo_full_reval_stock_change = ( monte_carlo_full_reval_stock - stock_values_today).sum(axis = 1)
 
-    # 5% VaR for stock
-    # MC_full_reval_VaR = abs(np.percentile(MC_full_reval_stock_port_change, VaR_percentile))
     monte_carlo_full_reval_stock_var_95 = calculate_var(monte_carlo_full_reval_stock_change, CONFIDENCE_LEVEL)
 
     print(f'Full Revaluation Stock 95% VaR: ${round(monte_carlo_full_reval_stock_var_95, 2):,}')
@@ -442,17 +466,12 @@ def monte_carlo_model_var_95(sofr_rates_change, returns_array, returns_mean, ret
     # sum portfolio changes due to swap and stock
     monte_carlo_full_reval_portfolio_change = monte_carlo_full_reval_payer + monte_carlo_full_reval_stock_change
 
-    # 5th percentile for VaR
-    # MC_full_reval_portfolio_VaR = abs(np.percentile(MC_full_reval_portfolio_change, VaR_percentile))
     monte_carlo_full_reval_portfolio_var_95 = calculate_var( monte_carlo_full_reval_portfolio_change, CONFIDENCE_LEVEL)
     print(f'Full Revaluation 95% VaR: ${round(monte_carlo_full_reval_portfolio_var_95, 2):,}')
 
-    # plot(MC_full_reval_portfolio_change, MC_full_reval_portfolio_VaR, 'Monte Carlo Full Revaluation Portfolio Delta')
     # sum portfolio changes due to swap and stock
     monte_carlo_risk_based_portfolio_change = monte_carlo_risk_based_payer + monte_carlo_risk_based_stock_change
 
-    # 5th percentile for VaR
-    # MC_risk_based_portfolio_VaR = abs(np.percentile(MC_risk_based_portfolio_change, VaR_percentile))
     monte_carlo_risk_based_portfolio_var_95 = calculate_var( monte_carlo_risk_based_portfolio_change, CONFIDENCE_LEVEL )
     print(f'Full Revaluation 95% VaR: ${round(monte_carlo_risk_based_portfolio_var_95, 2):,}')
 
@@ -493,8 +512,6 @@ def historical_model_var_95(discount_rates, sofr_rates, sofr_rates_change, swap_
     # np.newaxis is used to align the dimensions for broadcasting
     sofr_historical_discount_factor = np.exp(- historical_rates * time_periods[np.newaxis, :])
 
-
-    # sofr_historical_discount_factor = discount_rates.to_numpy()
     print("check123: ", sofr_historical_discount_factor.shape)
     historical_full_reval_payer = []
 
@@ -510,13 +527,11 @@ def historical_model_var_95(discount_rates, sofr_rates, sofr_rates_change, swap_
     historical_full_reval_payer_95_var = calculate_var(historical_full_reval_payer, CONFIDENCE_LEVEL)
 
     # Risk-based approach using PV01 and historical rate changes
-    # historical_swap_value_interest_rate_sensitivity = (pv01 * sofr_rates_change.to_numpy()).sum(axis=1)
 
     print("pv01 111: ", pv01.shape)
     print("sofr_rates_change 111: ", sofr_rates_change.shape)
     historical_risk_based_payer = (pv01 * sofr_rates_change.to_numpy()).sum(axis=1)
     print("historical_risk_based_payer: ", historical_risk_based_payer.shape)
-    # historical_risk_based_payer_var_95 = calculate_var(historical_swap_value_interest_rate_sensitivity, CONFIDENCE_LEVEL)
     historical_risk_based_payer_var_95 = calculate_var(historical_risk_based_payer, CONFIDENCE_LEVEL)
 
     ### STOCK ###
@@ -528,7 +543,6 @@ def historical_model_var_95(discount_rates, sofr_rates, sofr_rates_change, swap_
 
     # subtract new stock portfolio value from current value 
     historical_full_reval_stock_change = (historical_full_reval_stock - stock_values_today).sum(axis = 1) 
-    # HS_full_reval_VaR = abs(np.percentile(HS_full_reval_stock_port_change, VaR_percentile))
     historical_full_reval_stock_var_95 = calculate_var( historical_full_reval_stock_change, CONFIDENCE_LEVEL )
 
     print(f'Full Revaluation Stock 95% VaR: ${round(historical_full_reval_stock_var_95, 2):,}')
@@ -540,34 +554,26 @@ def historical_model_var_95(discount_rates, sofr_rates, sofr_rates_change, swap_
     # sum change
     historical_risk_based_stock_change = historical_risk_based_stock_change.sum(axis = 1)
 
-    # 5th percentile for VaR
     # HS_risk_based_VaR = abs(np.percentile(historical_risk_based_stock_change, VaR_percentile))
     historical_risk_based_stock_var_95 = calculate_var( historical_risk_based_stock_change, CONFIDENCE_LEVEL )
 
     print(f'Full Revaluation Stock 95% VaR: ${round(historical_risk_based_stock_var_95, 2):,}')
-    # plot(historical_risk_based_stock_change, HS_risk_based_VaR, 'Historical Risk-Based Stock Value Delta')
 
     ### PORTFOLIO ###
     # sum portfolio changes due to swap and stock
     historical_full_reval_portfolio_change = historical_full_reval_payer + historical_full_reval_stock_change
 
-    # 5th percentile for VaR
-    # HS_full_reval_portfolio_VaR = abs(np.percentile(HS_full_reval_portfolio_change, VaR_percentile))
     historical_full_reval_portfolio_var_95 = calculate_var( historical_full_reval_portfolio_change, CONFIDENCE_LEVEL )
 
 
     print(f'Full Revaluation Portfolio 95% VaR: ${round(historical_full_reval_portfolio_var_95, 2):,}')
-    # plot(HS_full_reval_portfolio_change, HS_full_reval_portfolio_VaR, 'Historical Full Revaluation Portfolio Delta')
 
     # sum portfolio changes due to swap and stock
     historical_risk_based_portfolio_change = historical_risk_based_payer + historical_risk_based_stock_change
 
-    # 5th percentile for VaR
-    # HS_risk_based_portfolio_VaR = abs(np.percentile(historical_risk_based_portfolio_change, VaR_percentile))
     historical_risk_based_portfolio_var_95 = calculate_var( historical_risk_based_portfolio_change, CONFIDENCE_LEVEL )
 
     print(f'Risk-Based Portfolio 95% VaR: ${round(historical_risk_based_portfolio_var_95, 2):,}')
-    # plot(HS_risk_based_portfolio_change, HS_risk_based_portfolio_VaR, 'Historical Risk-Based Portfolio Delta')
 
     return historical_full_reval_payer_95_var, historical_risk_based_payer_var_95, historical_full_reval_stock_var_95, historical_risk_based_stock_var_95, historical_full_reval_portfolio_var_95, historical_risk_based_portfolio_var_95
 
