@@ -135,9 +135,10 @@ def data_prep():
 
     # Calculate discount rates using e^-rT for each tenor and rate
     discount_rates = sofr_rates.copy()
-
+    print("sofr_rates123: ", sofr_rates.shape)
     for tenor, rate in zip(tenors, sofr_rates.columns):
         discount_rates[rate] = np.exp(-sofr_rates[rate] * tenor)
+    print("discount_rates123: ", discount_rates.shape)
 
     # Convert the index of the sofr_rates DataFrame to datetime
     sofr_rates.index = pd.to_datetime(sofr_rates.index)
@@ -191,8 +192,8 @@ def data_prep():
     prices_array  = stock_prices[prices_columns].to_numpy()
     returns_array = stock_prices[returns_columns].to_numpy()
 
-    # print("prices_array: ", prices_array)
-    # print("returns_array: ", returns_array)
+    print("prices_array: ", prices_array)
+    print("returns_array: ", returns_array)
 
     returns_mean = returns_array.mean(axis = 0)
     returns_std  = returns_array.std(axis = 0)
@@ -231,9 +232,9 @@ def data_prep():
     swap_value_change = np.array(swap_value_change)
     pv01 = swap_value_change / basis_point_change
 
-    return discount_rates, sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, sofr_today, swap_value_today, pv01
+    return discount_rates, sofr_rates, sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, num_shares_held_today, stock_prices_today, sofr_today, swap_value_today, pv01
 
-discount_rates, sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, sofr_today, swap_value_today, pv01 = data_prep()
+discount_rates, sofr_rates, sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, num_shares_held_today, stock_prices_today, sofr_today, swap_value_today, pv01 = data_prep()
 
 #############
 # PARAMETRIC
@@ -315,7 +316,7 @@ def simulate_sobol_returns(dimension, power, mean, std):
     Returns:
     - Simulated returns following the specified normal distribution.
     """
-    sampler = qmc.Sobol(d=dimension, scramble=False)
+    sampler = qmc.Sobol(d=dimension, scramble=True)
     samples = sampler.random_base2(m=power)
     samples = np.delete(samples, 0, axis=0)  # Remove the first all-zero sample
     
@@ -340,10 +341,10 @@ def apply_cholesky(simulated_returns, correlation_matrix):
     
     return correlated_returns
 
-def monte_carlo_model_var_95(sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, sofr_today, swap_value_today):
+def monte_carlo_model_var_95(sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, num_shares_held_today, stock_prices_today, sofr_today, swap_value_today):
     stocks_dimension = 4  # For 4 stocks
     sofr_dimension = len(sofr_rates_change.columns)
-    power = 20
+    power = 12
     # Simulate stock returns
     stock_simulation = simulate_sobol_returns(stocks_dimension, power, returns_mean, returns_std)
     # print("returns_array: ", returns_array)
@@ -381,6 +382,7 @@ def monte_carlo_model_var_95(sofr_rates_change, returns_array, returns_mean, ret
     sofr_simulation_applied_today_discount_factor = np.array( sofr_simulation_applied_today_discount_factor )
     print("sofr_simulation_applied_today_discount_factor: ", sofr_simulation_applied_today_discount_factor.shape)
 
+    ### SWAP ###
     monte_carlo_full_reval_payer = []
     # compute payer swap value for each simulation
     for simulation_discount_factor in sofr_simulation_applied_today_discount_factor:
@@ -404,15 +406,67 @@ def monte_carlo_model_var_95(sofr_rates_change, returns_array, returns_mean, ret
 
     print("Monte Carlo VaR 95 (Risk-Based): ", monte_carlo_risk_based_payer_var_95)
 
-    return monte_carlo_full_reval_payer_var_95, monte_carlo_risk_based_payer_var_95
+    ### STOCK ###
+    print("stock_prices_today111: ", stock_prices_today.values)
+    print("stock_simulation111: ", stock_simulation.shape)
+    # apply risk factor to today's prices to get new stock prices
+    monte_carlo_full_reval_stock_prices = stock_prices_today.values * (1 + stock_simulation)
+    print("monte_carlo_full_reval_stock_prices: ", monte_carlo_full_reval_stock_prices)
+    print("num_shares_held_today: ", num_shares_held_today)
+    # multiply shares with stock price to get new stock portfolio value
+    monte_carlo_full_reval_stock = num_shares_held_today.values * monte_carlo_full_reval_stock_prices
+    print("monte_carlo_full_reval_stock: ", monte_carlo_full_reval_stock)
 
-monte_carlo_full_reval_payer_var_95, monte_carlo_risk_based_payer_var_95 = monte_carlo_model_var_95(sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, sofr_today, swap_value_today)
+    # subtract new stock portfolio value from current value 
+    monte_carlo_full_reval_stock_change = ( monte_carlo_full_reval_stock - stock_values_today).sum(axis = 1)
+
+    # 5% VaR for stock
+    # MC_full_reval_VaR = abs(np.percentile(MC_full_reval_stock_port_change, VaR_percentile))
+    monte_carlo_full_reval_stock_var_95 = calculate_var(monte_carlo_full_reval_stock_change, CONFIDENCE_LEVEL)
+
+    print(f'Full Revaluation Stock 95% VaR: ${round(monte_carlo_full_reval_stock_var_95, 2):,}')
+
+
+    # calculate change as a result of risk factor to the portfolio value
+    monte_carlo_risk_based_stock_change = stock_values_today * stock_simulation 
+    monte_carlo_risk_based_stock_change = monte_carlo_risk_based_stock_change.sum(axis = 1)
+
+    # 5% VaR for stock
+    monte_carlo_risk_based_stock_var_95 = calculate_var( monte_carlo_risk_based_stock_change, CONFIDENCE_LEVEL )
+
+    print(f'Risk-Based Stock 95% VaR: ${round(monte_carlo_risk_based_stock_var_95, 2):,}')
+
+    # plot(monte_carlo_risk_based_stock_change, MC_risk_based_VaR, 'Monte Carlo Risk-Based Stock Value Delta')
+
+    ### PORTFOLIO ###
+    # sum portfolio changes due to swap and stock
+    monte_carlo_full_reval_portfolio_change = monte_carlo_full_reval_payer + monte_carlo_full_reval_stock_change
+
+    # 5th percentile for VaR
+    # MC_full_reval_portfolio_VaR = abs(np.percentile(MC_full_reval_portfolio_change, VaR_percentile))
+    monte_carlo_full_reval_portfolio_var_95 = calculate_var( monte_carlo_full_reval_portfolio_change, CONFIDENCE_LEVEL)
+    print(f'Full Revaluation 95% VaR: ${round(monte_carlo_full_reval_portfolio_var_95, 2):,}')
+
+    # plot(MC_full_reval_portfolio_change, MC_full_reval_portfolio_VaR, 'Monte Carlo Full Revaluation Portfolio Delta')
+    # sum portfolio changes due to swap and stock
+    monte_carlo_risk_based_portfolio_change = monte_carlo_risk_based_payer + monte_carlo_risk_based_stock_change
+
+    # 5th percentile for VaR
+    # MC_risk_based_portfolio_VaR = abs(np.percentile(MC_risk_based_portfolio_change, VaR_percentile))
+    monte_carlo_risk_based_portfolio_var_95 = calculate_var( monte_carlo_risk_based_portfolio_change, CONFIDENCE_LEVEL )
+    print(f'Full Revaluation 95% VaR: ${round(monte_carlo_risk_based_portfolio_var_95, 2):,}')
+
+    # plot(MC_risk_based_portfolio_change, MC_risk_based_portfolio_VaR, 'Monte Carlo Risk-Based Portfolio Delta')
+
+    return monte_carlo_full_reval_payer_var_95, monte_carlo_risk_based_payer_var_95, monte_carlo_full_reval_stock_var_95, monte_carlo_risk_based_stock_var_95, monte_carlo_full_reval_portfolio_var_95, monte_carlo_risk_based_portfolio_var_95
+
+monte_carlo_full_reval_payer_var_95, monte_carlo_risk_based_payer_var_95, monte_carlo_full_reval_stock_var_95, monte_carlo_risk_based_stock_var_95, monte_carlo_full_reval_portfolio_var_95, monte_carlo_risk_based_portfolio_var_95 = monte_carlo_model_var_95(sofr_rates_change, returns_array, returns_mean, returns_std, returns_cov, sofr_mean, sofr_std, sofr_cov, stock_values_today, num_shares_held_today, stock_prices_today, sofr_today, swap_value_today)
 
 #############
 # HISTORICAL
 #############
 
-def historical_model_var_95(discount_rates, sofr_rates_change, swap_value_today):
+def historical_model_var_95(discount_rates, sofr_rates, sofr_rates_change, swap_value_today, returns_array, stock_prices_today, num_shares_held_today):
     """
     Calculate historical Value at Risk (VaR) using both a full revaluation and a risk-based approach.
 
@@ -424,31 +478,110 @@ def historical_model_var_95(discount_rates, sofr_rates_change, swap_value_today)
     Returns:
     - A tuple containing the VaR values for the full revaluation and risk-based approaches.
     """
-    # Ensure input is NumPy array for vectorized operations
-    sofr_historical_discount_factor = np.array(discount_rates)
-    # Vectorized calculation of swap values based on historical discount factors
-    historical_full_reval_payer_data = [PV_payer_swap(factor, FIXED_LEG_IR, SWAP_NOTIONAL) for factor in sofr_historical_discount_factor]
-    historical_full_reval_payer = np.array(historical_full_reval_payer_data) - swap_value_today
+
+    ### SWAP ###
+
+    sofr_rate_today = sofr_rates.loc[TODAY_DATE].to_numpy()
+
+    # Apply historical rate changes to today's rates and directly convert to a NumPy array for efficiency
+    historical_rates = sofr_rate_today + sofr_rates_change.to_numpy()
+
+    # Pre-compute the multipliers for discount factors (-1, -2, ..., -n) for each tenor
+    time_periods = np.arange(1, len(sofr_rate_today) + 1)
+
+    # Vectorized operation to compute discount factors
+    # np.newaxis is used to align the dimensions for broadcasting
+    sofr_historical_discount_factor = np.exp(- historical_rates * time_periods[np.newaxis, :])
+
+
+    # sofr_historical_discount_factor = discount_rates.to_numpy()
+    print("check123: ", sofr_historical_discount_factor.shape)
+    historical_full_reval_payer = []
+
+    print("sofr_historical_discount_factor.shape: ", sofr_historical_discount_factor.shape)
+    # compute payer swap value for each historical data
+    for historical_discount_factor in sofr_historical_discount_factor:
+        historical_full_reval_payer_data = PV_payer_swap(historical_discount_factor, FIXED_LEG_IR, SWAP_NOTIONAL)
+        historical_full_reval_payer.append( historical_full_reval_payer_data )
+
+    # calculate change in value of swap
+    historical_full_reval_payer = historical_full_reval_payer - swap_value_today
+    print("historical_full_reval_payer111: ", historical_full_reval_payer)
     historical_full_reval_payer_95_var = calculate_var(historical_full_reval_payer, CONFIDENCE_LEVEL)
 
     # Risk-based approach using PV01 and historical rate changes
-    historical_swap_value_interest_rate_sensitivity = (pv01 * sofr_rates_change.to_numpy()).sum(axis=1)
-    historical_risk_based_payer_var_95 = calculate_var(historical_swap_value_interest_rate_sensitivity, CONFIDENCE_LEVEL)
+    # historical_swap_value_interest_rate_sensitivity = (pv01 * sofr_rates_change.to_numpy()).sum(axis=1)
 
-    return historical_full_reval_payer_95_var, historical_risk_based_payer_var_95
+    print("pv01 111: ", pv01.shape)
+    print("sofr_rates_change 111: ", sofr_rates_change.shape)
+    historical_risk_based_payer = (pv01 * sofr_rates_change.to_numpy()).sum(axis=1)
+    print("historical_risk_based_payer: ", historical_risk_based_payer.shape)
+    # historical_risk_based_payer_var_95 = calculate_var(historical_swap_value_interest_rate_sensitivity, CONFIDENCE_LEVEL)
+    historical_risk_based_payer_var_95 = calculate_var(historical_risk_based_payer, CONFIDENCE_LEVEL)
 
-historical_full_reval_payer_95_var, historical_risk_based_payer_var_95 = historical_model_var_95(discount_rates, sofr_rates_change, swap_value_today)
+    ### STOCK ###
+    # apply risk factor to today's prices to get new stock prices
+    historical_full_reval_stock_prices = stock_prices_today.values * (1 + returns_array)
 
-print("Historical Var 95 (Full Revaluation): ", historical_full_reval_payer_95_var)
-print("Historical Var 95 (Risk-Based): ", historical_risk_based_payer_var_95)
+    # multiply shares with stock price to get new stock portfolio value
+    historical_full_reval_stock = num_shares_held_today.values * historical_full_reval_stock_prices
 
+    # subtract new stock portfolio value from current value 
+    historical_full_reval_stock_change = (historical_full_reval_stock - stock_values_today).sum(axis = 1) 
+    # HS_full_reval_VaR = abs(np.percentile(HS_full_reval_stock_port_change, VaR_percentile))
+    historical_full_reval_stock_var_95 = calculate_var( historical_full_reval_stock_change, CONFIDENCE_LEVEL )
+
+    print(f'Full Revaluation Stock 95% VaR: ${round(historical_full_reval_stock_var_95, 2):,}')
+    # plot(HS_full_reval_stock_port_change, HS_full_reval_VaR, 'Historical Full Revaluation Stock Value Delta')
+
+    # immediately multiply change in risk to holdings
+    historical_risk_based_stock_change = stock_values_today * returns_array
+
+    # sum change
+    historical_risk_based_stock_change = historical_risk_based_stock_change.sum(axis = 1)
+
+    # 5th percentile for VaR
+    # HS_risk_based_VaR = abs(np.percentile(historical_risk_based_stock_change, VaR_percentile))
+    historical_risk_based_stock_var_95 = calculate_var( historical_risk_based_stock_change, CONFIDENCE_LEVEL )
+
+    print(f'Full Revaluation Stock 95% VaR: ${round(historical_risk_based_stock_var_95, 2):,}')
+    # plot(historical_risk_based_stock_change, HS_risk_based_VaR, 'Historical Risk-Based Stock Value Delta')
+
+    ### PORTFOLIO ###
+    # sum portfolio changes due to swap and stock
+    historical_full_reval_portfolio_change = historical_full_reval_payer + historical_full_reval_stock_change
+
+    # 5th percentile for VaR
+    # HS_full_reval_portfolio_VaR = abs(np.percentile(HS_full_reval_portfolio_change, VaR_percentile))
+    historical_full_reval_portfolio_var_95 = calculate_var( historical_full_reval_portfolio_change, CONFIDENCE_LEVEL )
+
+
+    print(f'Full Revaluation Portfolio 95% VaR: ${round(historical_full_reval_portfolio_var_95, 2):,}')
+    # plot(HS_full_reval_portfolio_change, HS_full_reval_portfolio_VaR, 'Historical Full Revaluation Portfolio Delta')
+
+    # sum portfolio changes due to swap and stock
+    historical_risk_based_portfolio_change = historical_risk_based_payer + historical_risk_based_stock_change
+
+    # 5th percentile for VaR
+    # HS_risk_based_portfolio_VaR = abs(np.percentile(historical_risk_based_portfolio_change, VaR_percentile))
+    historical_risk_based_portfolio_var_95 = calculate_var( historical_risk_based_portfolio_change, CONFIDENCE_LEVEL )
+
+    print(f'Risk-Based Portfolio 95% VaR: ${round(historical_risk_based_portfolio_var_95, 2):,}')
+    # plot(HS_risk_based_portfolio_change, HS_risk_based_portfolio_VaR, 'Historical Risk-Based Portfolio Delta')
+
+    return historical_full_reval_payer_95_var, historical_risk_based_payer_var_95, historical_full_reval_stock_var_95, historical_risk_based_stock_var_95, historical_full_reval_portfolio_var_95, historical_risk_based_portfolio_var_95
+
+historical_full_reval_payer_95_var, historical_risk_based_payer_var_95, historical_full_reval_stock_var_95, historical_risk_based_stock_var_95, historical_full_reval_portfolio_var_95, historical_risk_based_portfolio_var_95 = historical_model_var_95(discount_rates, sofr_rates, sofr_rates_change, swap_value_today, returns_array, stock_prices_today, num_shares_held_today)
+
+# print("Historical Var 95 (Full Revaluation): ", historical_full_reval_payer_95_var)
+# print("Historical Var 95 (Risk-Based): ", historical_risk_based_payer_var_95)
 
 print("*** ANDRE ANSWERS ***")
 print("Parametric VaR 95: ", parametric_var_95_portfolio)
-print("Monte Carlo VaR 95 (Full Revaluation): ", monte_carlo_full_reval_payer_var_95)
-print("Monte Carlo VaR 95 (Risk-Based): ", monte_carlo_risk_based_payer_var_95)
-print("Historical VaR 95 (Full Revaluation): ", historical_full_reval_payer_95_var)
-print("Historical VaR 95 (Risk-Based): ", historical_risk_based_payer_var_95)
+print("Monte Carlo VaR 95 (Full Revaluation): ", monte_carlo_full_reval_portfolio_var_95)
+print("Monte Carlo VaR 95 (Risk-Based): ", monte_carlo_risk_based_portfolio_var_95)
+print("Historical VaR 95 (Full Revaluation): ", historical_full_reval_portfolio_var_95)
+print("Historical VaR 95 (Risk-Based): ", historical_risk_based_portfolio_var_95)
 
 
 
